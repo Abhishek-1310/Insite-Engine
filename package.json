@@ -1,0 +1,12 @@
+{
+  "name": "insight-engine",
+  "version": "1.0.0",
+  "description": "AI-Powered Second Brain - RAG Application",
+  "private": true,
+  "scripts": {
+    "deploy": "cd backend && npm run deploy",
+    "deploy:frontend": "cd frontend && npm run build"
+  },
+  "author": "Abhishek",
+  "license": "MIT"
+}

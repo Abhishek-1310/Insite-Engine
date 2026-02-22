@@ -1,0 +1,30 @@
+{
+  "name": "insight-engine-backend",
+  "version": "1.0.0",
+  "description": "Insight Engine - Serverless Backend",
+  "main": "src/handlers/index.ts",
+  "scripts": {
+    "deploy": "serverless deploy --stage dev",
+    "deploy:prod": "serverless deploy --stage prod",
+    "remove": "serverless remove --stage dev",
+    "lint": "eslint src/",
+    "typecheck": "tsc --noEmit",
+    "local": "serverless offline"
+  },
+  "dependencies": {
+    "@google/generative-ai": "^0.21.0",
+    "@pinecone-database/pinecone": "^4.0.0",
+    "pdf-parse": "^1.1.1",
+    "uuid": "^10.0.0"
+  },
+  "devDependencies": {
+    "@types/aws-lambda": "^8.10.145",
+    "@types/node": "^20.14.0",
+    "@types/pdf-parse": "^1.1.4",
+    "@types/uuid": "^10.0.0",
+    "esbuild": "^0.23.0",
+    "serverless": "^3.39.0",
+    "serverless-esbuild": "^1.52.0",
+    "typescript": "^5.5.0"
+  }
+}

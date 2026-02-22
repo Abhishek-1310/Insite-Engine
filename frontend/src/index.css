@@ -1,0 +1,120 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+* {
+  font-family: "Inter", system-ui, -apple-system, sans-serif;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: rgba(15, 23, 42, 0.5);
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(59, 130, 246, 0.3);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(59, 130, 246, 0.5);
+}
+
+/* Markdown content styling */
+.prose-chat h1,
+.prose-chat h2,
+.prose-chat h3 {
+  @apply font-semibold text-white mt-3 mb-1;
+}
+
+.prose-chat h1 {
+  @apply text-lg;
+}
+
+.prose-chat h2 {
+  @apply text-base;
+}
+
+.prose-chat h3 {
+  @apply text-sm;
+}
+
+.prose-chat p {
+  @apply mb-2 leading-relaxed;
+}
+
+.prose-chat ul,
+.prose-chat ol {
+  @apply ml-4 mb-2;
+}
+
+.prose-chat li {
+  @apply mb-1;
+}
+
+.prose-chat ul li {
+  @apply list-disc;
+}
+
+.prose-chat ol li {
+  @apply list-decimal;
+}
+
+.prose-chat code {
+  @apply bg-dark-800 text-primary-300 px-1.5 py-0.5 rounded text-sm font-mono;
+}
+
+.prose-chat pre {
+  @apply bg-dark-800 p-3 rounded-lg mb-2 overflow-x-auto;
+}
+
+.prose-chat pre code {
+  @apply bg-transparent p-0;
+}
+
+.prose-chat strong {
+  @apply font-semibold text-white;
+}
+
+.prose-chat blockquote {
+  @apply border-l-2 border-primary-500 pl-3 italic text-dark-300;
+}
+
+/* Typing indicator */
+@keyframes blink {
+  0%,
+  20% {
+    opacity: 0;
+  }
+  50% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+.typing-dot {
+  animation: blink 1.4s infinite;
+}
+
+.typing-dot:nth-child(2) {
+  animation-delay: 0.2s;
+}
+
+.typing-dot:nth-child(3) {
+  animation-delay: 0.4s;
+}
+
+/* Glassmorphism */
+.glass {
+  @apply bg-white/5 backdrop-blur-xl border border-white/10;
+}
+
+.glass-hover {
+  @apply hover:bg-white/10 hover:border-white/20 transition-all duration-200;
+}

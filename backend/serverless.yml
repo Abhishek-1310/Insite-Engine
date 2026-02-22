@@ -1,0 +1,141 @@
+service: insight-engine-v1
+
+frameworkVersion: "3"
+
+provider:
+  name: aws
+  runtime: nodejs20.x
+  stage: ${opt:stage, 'dev'}
+  region: ap-south-2
+  timeout: 30
+  memorySize: 512
+  environment:
+    GEMINI_API_KEY: ${env:GEMINI_API_KEY, ''}
+    PINECONE_API_KEY: ${env:PINECONE_API_KEY, ''}
+    UPLOAD_BUCKET: ${self:custom.uploadBucket}
+    STAGE: ${self:provider.stage}
+  iam:
+    role:
+      statements:
+        - Effect: Allow
+          Action:
+            - s3:GetObject
+            - s3:PutObject
+            - s3:DeleteObject
+            - s3:ListBucket
+          Resource:
+            - arn:aws:s3:::${self:custom.uploadBucket}
+            - arn:aws:s3:::${self:custom.uploadBucket}/*
+  httpApi:
+    cors:
+      allowedOrigins:
+        - "*"
+      allowedHeaders:
+        - Content-Type
+        - Authorization
+      allowedMethods:
+        - GET
+        - POST
+        - DELETE
+        - OPTIONS
+      allowCredentials: false
+
+custom:
+  uploadBucket: insight-engine-v1-uploads-${self:provider.stage}-${aws:accountId}
+  esbuild:
+    bundle: true
+    minify: false
+    sourcemap: true
+    exclude:
+      - aws-sdk
+    target: node20
+    platform: node
+    concurrency: 10
+
+plugins:
+  - serverless-esbuild
+
+functions:
+  # --- Module 2: Ingestion ---
+  getUploadUrl:
+    handler: src/handlers/upload.getPresignedUrl
+    events:
+      - httpApi:
+          path: /upload-url
+          method: POST
+
+  onFileUpload:
+    handler: src/handlers/ingest.handler
+    timeout: 120
+    memorySize: 1024
+    events:
+      - s3:
+          bucket: ${self:custom.uploadBucket}
+          event: s3:ObjectCreated:*
+          existing: true
+
+  # --- YouTube URL Ingestion ---
+  ingestUrl:
+    handler: src/handlers/ingestUrl.handler
+    timeout: 120
+    memorySize: 1024
+    events:
+      - httpApi:
+          path: /ingest-url
+          method: POST
+
+  # --- Module 3: Chat & Retrieval ---
+  ask:
+    handler: src/handlers/ask.handler
+    timeout: 60
+    memorySize: 512
+    events:
+      - httpApi:
+          path: /ask
+          method: POST
+
+  # --- Document Management ---
+  listDocuments:
+    handler: src/handlers/documents.listDocuments
+    events:
+      - httpApi:
+          path: /documents
+          method: GET
+
+  deleteDocument:
+    handler: src/handlers/documents.deleteDocument
+    events:
+      - httpApi:
+          path: /documents/{documentId}
+          method: DELETE
+
+resources:
+  Resources:
+    UploadBucket:
+      Type: AWS::S3::Bucket
+      Properties:
+        BucketName: ${self:custom.uploadBucket}
+        CorsConfiguration:
+          CorsRules:
+            - AllowedHeaders:
+                - "*"
+              AllowedMethods:
+                - GET
+                - PUT
+                - POST
+              AllowedOrigins:
+                - "*"
+              MaxAge: 3600
+        LifecycleConfiguration:
+          Rules:
+            - Id: AutoCleanup
+              Status: Enabled
+              ExpirationInDays: 90
+
+  Outputs:
+    ApiUrl:
+      Description: API Gateway endpoint URL
+      Value: !Sub "https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com"
+    UploadBucketName:
+      Description: S3 Upload Bucket Name
+      Value: !Ref UploadBucket
