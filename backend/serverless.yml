@@ -10,8 +10,8 @@ provider:
   timeout: 30
   memorySize: 512
   environment:
-    GEMINI_API_KEY: ${env:GEMINI_API_KEY, ''}
-    PINECONE_API_KEY: ${env:PINECONE_API_KEY, ''}
+    GEMINI_API_KEY: ${env:GEMINI_API_KEY}
+    PINECONE_API_KEY: ${env:PINECONE_API_KEY}
     UPLOAD_BUCKET: ${self:custom.uploadBucket}
     STAGE: ${self:provider.stage}
   iam:
