@@ -1,6 +1,7 @@
-import { S3 } from "aws-sdk";
+import { S3Client, GetObjectCommand, ListObjectsV2Command, DeleteObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3";
+import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 
-const s3 = new S3();
+const s3 = new S3Client({});
 
 /**
  * Generate a pre-signed URL for direct S3 upload from the browser
@@ -11,12 +12,12 @@ export async function generatePresignedUrl(
   contentType: string,
   expiresIn: number = 300
 ): Promise<string> {
-  return s3.getSignedUrlPromise("putObject", {
+  const command = new PutObjectCommand({
     Bucket: bucket,
     Key: key,
     ContentType: contentType,
-    Expires: expiresIn,
   });
+  return getSignedUrl(s3, command, { expiresIn });
 }
 
 /**
@@ -26,30 +27,26 @@ export async function getFileFromS3(
   bucket: string,
   key: string
 ): Promise<Buffer> {
-  const result = await s3
-    .getObject({
-      Bucket: bucket,
-      Key: key,
-    })
-    .promise();
-
-  return result.Body as Buffer;
+  const command = new GetObjectCommand({ Bucket: bucket, Key: key });
+  const result = await s3.send(command);
+  const stream = result.Body as NodeJS.ReadableStream;
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    stream.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+    stream.on("end", () => resolve(Buffer.concat(chunks)));
+    stream.on("error", reject);
+  });
 }
 
 /**
- * List all PDF files in the S3 bucket
+ * List all files in the S3 bucket
  */
 export async function listFiles(
   bucket: string,
   prefix: string = ""
-): Promise<S3.ObjectList> {
-  const result = await s3
-    .listObjectsV2({
-      Bucket: bucket,
-      Prefix: prefix,
-    })
-    .promise();
-
+): Promise<{ Key?: string; Size?: number; LastModified?: Date }[]> {
+  const command = new ListObjectsV2Command({ Bucket: bucket, Prefix: prefix });
+  const result = await s3.send(command);
   return result.Contents || [];
 }
 
@@ -60,10 +57,6 @@ export async function deleteFile(
   bucket: string,
   key: string
 ): Promise<void> {
-  await s3
-    .deleteObject({
-      Bucket: bucket,
-      Key: key,
-    })
-    .promise();
-}
+  const command = new DeleteObjectCommand({ Bucket: bucket, Key: key });
+  await s3.send(command);
+} 
