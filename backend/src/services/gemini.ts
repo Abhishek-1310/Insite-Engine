@@ -4,15 +4,36 @@ import { config } from "../config";
 const genAI = new GoogleGenerativeAI(config.geminiApiKey);
 
 /**
+ * Generate embeddings using Gemini REST API v1 directly
+ * The SDK uses v1beta which doesn't support gemini-embedding-001
+ */
+async function callEmbeddingAPI(text: string): Promise<number[]> {
+  const url = `https://generativelanguage.googleapis.com/v1/models/${config.embeddingModel}:embedContent?key=${config.geminiApiKey}`;
+
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: `models/${config.embeddingModel}`,
+      content: { parts: [{ text }] },
+      outputDimensionality: 768,
+    }),
+  });
+
+  if (!response.ok) {
+    const error = await response.text();
+    throw new Error(`Embedding API error (${response.status}): ${error}`);
+  }
+
+  const data = (await response.json()) as { embedding: { values: number[] } };
+  return data.embedding.values;
+}
+
+/**
  * Generate embeddings for a text string using Gemini Embedding API
  */
 export async function generateEmbedding(text: string): Promise<number[]> {
-  const model = genAI.getGenerativeModel({ model: config.embeddingModel });
-  const result = await model.embedContent({
-    content: { role: "user", parts: [{ text }] },
-    outputDimensionality: 768,
-  } as any);
-  return result.embedding.values;
+  return callEmbeddingAPI(text);
 }
 
 /**
@@ -21,22 +42,15 @@ export async function generateEmbedding(text: string): Promise<number[]> {
 export async function generateEmbeddings(
   texts: string[]
 ): Promise<number[][]> {
-  const model = genAI.getGenerativeModel({ model: config.embeddingModel });
-
   const embeddings: number[][] = [];
 
-  // Process in batches of 5 to avoid rate limits
-  const batchSize = 5;
-  for (let i = 0; i < texts.length; i += batchSize) {
-    const batch = texts.slice(i, i + batchSize);
-    const results = await Promise.all(
-      batch.map((text) => model.embedContent(text))
-    );
-    embeddings.push(...results.map((r) => r.embedding.values));
+  for (let i = 0; i < texts.length; i++) {
+    const embedding = await callEmbeddingAPI(texts[i]);
+    embeddings.push(embedding);
 
-    // Small delay between batches to respect rate limits
-    if (i + batchSize < texts.length) {
-      await new Promise((resolve) => setTimeout(resolve, 500));
+    // Small delay between requests to respect rate limits
+    if (i < texts.length - 1) {
+      await new Promise((resolve) => setTimeout(resolve, 300));
     }
   }
 

@@ -84,10 +84,34 @@ export async function deleteVectorsByDocument(
 ): Promise<void> {
   const index = getIndex();
 
-  // Delete by metadata filter
-  await index.deleteMany({
-    filter: { documentId: { $eq: documentId } },
-  });
+  try {
+    // First, query to find all vector IDs for this document
+    // Use a zero vector to match all, filtered by documentId
+    const zeroVector = new Array(768).fill(0);
+    const results = await index.query({
+      vector: zeroVector,
+      topK: 10000,
+      filter: { documentId: { $eq: documentId } },
+      includeMetadata: false,
+    });
+
+    const ids = (results.matches || []).map((match) => match.id);
+
+    if (ids.length > 0) {
+      // Delete by IDs in batches of 1000
+      const batchSize = 1000;
+      for (let i = 0; i < ids.length; i += batchSize) {
+        const batch = ids.slice(i, i + batchSize);
+        await index.deleteMany(batch);
+      }
+      console.log(`Deleted ${ids.length} vectors for document ${documentId}`);
+    } else {
+      console.log(`No vectors found for document ${documentId}`);
+    }
+  } catch (error) {
+    console.log(`Warning: Could not delete vectors for ${documentId}:`, error);
+    // Don't throw — S3 deletion already succeeded
+  }
 }
 
 /**
