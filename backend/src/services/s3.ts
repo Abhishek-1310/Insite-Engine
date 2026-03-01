@@ -1,11 +1,18 @@
 import { S3Client, GetObjectCommand, ListObjectsV2Command, DeleteObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 
-const s3 = new S3Client({});
+/**
+ * S3 client with checksum disabled so presigned URLs work with browser PUT.
+ * AWS SDK v3 adds CRC32 checksum requirements by default which browsers cannot fulfil.
+ */
+const s3 = new S3Client({
+  requestChecksumCalculation: "WHEN_REQUIRED",
+  responseChecksumValidation: "WHEN_REQUIRED",
+});
 
 /**
- * Generate a pre-signed URL for direct S3 upload from the browser
- * Note: We disable checksum so browsers can PUT without CRC32 headers
+ * Generate a pre-signed URL for direct S3 upload from the browser.
+ * The S3 client has checksum disabled so the browser can PUT without CRC32 headers.
  */
 export async function generatePresignedUrl(
   bucket: string,
@@ -18,10 +25,7 @@ export async function generatePresignedUrl(
     Key: key,
     ContentType: contentType,
   });
-  return getSignedUrl(s3, command, {
-    expiresIn,
-    unhoistableHeaders: new Set(["x-amz-checksum-crc32"]),
-  });
+  return getSignedUrl(s3, command, { expiresIn });
 }
 
 /**

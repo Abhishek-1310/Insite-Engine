@@ -1,8 +1,10 @@
 /**
  * YouTube transcript extraction service
- * Uses YouTube's Innertube API to fetch captions reliably from server environments.
- * The old HTML-scraping approach fails from AWS Lambda because YouTube
- * returns consent/bot-check pages to datacenter IPs.
+ *
+ * Strategy (in order of reliability from AWS Lambda):
+ *  1. Fetch the watch page with CONSENT cookie to bypass EU consent gate,
+ *     then extract captionTracks from the embedded JSON.
+ *  2. Fallback to YouTube's timedtext API (works for some videos).
  */
 
 const YOUTUBE_URL_PATTERNS = [
@@ -11,17 +13,6 @@ const YOUTUBE_URL_PATTERNS = [
   /(?:https?:\/\/)?(?:www\.)?youtube\.com\/embed\/([a-zA-Z0-9_-]{11})/,
   /(?:https?:\/\/)?(?:www\.)?youtube\.com\/shorts\/([a-zA-Z0-9_-]{11})/,
 ];
-
-const INNERTUBE_API_KEY = "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8";
-const INNERTUBE_BASE = "https://www.youtube.com/youtubei/v1";
-const INNERTUBE_CONTEXT = {
-  client: {
-    clientName: "WEB",
-    clientVersion: "2.20240101.00.00",
-    hl: "en",
-    gl: "US",
-  },
-};
 
 /**
  * Extract the video ID from a YouTube URL
@@ -44,8 +35,7 @@ export function isYouTubeUrl(url: string): boolean {
 }
 
 /**
- * Fetch the transcript/captions from a YouTube video using Innertube API.
- * This works reliably from AWS Lambda (no HTML scraping needed).
+ * Fetch the transcript/captions from a YouTube video.
  */
 export async function fetchYouTubeTranscript(url: string): Promise<{
   text: string;
@@ -58,61 +48,66 @@ export async function fetchYouTubeTranscript(url: string): Promise<{
   }
 
   try {
-    // Step 1: Get video info (title + caption tracks) via Innertube player endpoint
-    const playerResponse = await fetch(
-      `${INNERTUBE_BASE}/player?key=${INNERTUBE_API_KEY}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          context: INNERTUBE_CONTEXT,
-          videoId,
-        }),
+    // ---------- Step 1: Get the watch page ---------
+    // Setting CONSENT=YES cookie avoids the EU consent wall that blocks Lambda.
+    const pageUrl = `https://www.youtube.com/watch?v=${videoId}`;
+    const pageResponse = await fetch(pageUrl, {
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+        "Accept-Language": "en-US,en;q=0.9",
+        Cookie: "CONSENT=YES+cb.20210328-17-p0.en+FX+634",
+      },
+      redirect: "follow",
+    });
+
+    if (!pageResponse.ok) {
+      throw new Error(`Failed to fetch YouTube page: ${pageResponse.status}`);
+    }
+
+    const html = await pageResponse.text();
+
+    // ---------- Extract title ----------
+    const titleMatch = html.match(/"title"\s*:\s*"([^"]+)"/);
+    const title = titleMatch
+      ? decodeJsonUnicode(titleMatch[1])
+      : `YouTube Video ${videoId}`;
+
+    // ---------- Step 2: Extract captionTracks ----------
+    const captionTrackPattern = /"captionTracks"\s*:\s*(\[.*?\])/s;
+    const ctMatch = html.match(captionTrackPattern);
+
+    let transcript = "";
+
+    if (ctMatch) {
+      try {
+        const tracks = JSON.parse(ctMatch[1]) as {
+          baseUrl: string;
+          languageCode: string;
+          kind?: string;
+        }[];
+
+        // Prefer manual English > auto-generated English > first available
+        const pick =
+          tracks.find((t) => t.languageCode === "en" && t.kind !== "asr") ||
+          tracks.find((t) => t.languageCode === "en") ||
+          tracks[0];
+
+        if (pick?.baseUrl) {
+          const capResp = await fetch(pick.baseUrl);
+          if (capResp.ok) {
+            transcript = parseCaptionXml(await capResp.text());
+          }
+        }
+      } catch {
+        // JSON parse failed — fall through to timedtext fallback
       }
-    );
-
-    if (!playerResponse.ok) {
-      throw new Error(`Innertube player API error: ${playerResponse.status}`);
     }
 
-    const playerData = (await playerResponse.json()) as Record<string, any>;
-
-    const title =
-      playerData?.videoDetails?.title || `YouTube Video ${videoId}`;
-
-    // Get caption tracks from player response
-    const captionTracks =
-      playerData?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
-
-    if (!captionTracks || captionTracks.length === 0) {
-      throw new Error(
-        "No captions/transcript available for this video. The video may not have subtitles enabled."
-      );
+    // ---------- Step 3: Fallback to timedtext API ----------
+    if (!transcript) {
+      transcript = await fetchTimedText(videoId);
     }
-
-    // Prefer manual English > auto-generated English > first available
-    const englishManual = captionTracks.find(
-      (t: { languageCode: string; kind?: string }) =>
-        t.languageCode === "en" && t.kind !== "asr"
-    );
-    const englishAuto = captionTracks.find(
-      (t: { languageCode: string; kind?: string }) =>
-        t.languageCode === "en" && t.kind === "asr"
-    );
-    const selectedTrack = englishManual || englishAuto || captionTracks[0];
-
-    if (!selectedTrack?.baseUrl) {
-      throw new Error("No usable caption track found for this video.");
-    }
-
-    // Step 2: Fetch the captions XML from the baseUrl
-    const captionResponse = await fetch(selectedTrack.baseUrl);
-    if (!captionResponse.ok) {
-      throw new Error(`Failed to fetch captions XML: ${captionResponse.status}`);
-    }
-
-    const captionXml = await captionResponse.text();
-    const transcript = parseCaptionXml(captionXml);
 
     if (!transcript || transcript.trim().length === 0) {
       throw new Error(
@@ -122,11 +117,44 @@ export async function fetchYouTubeTranscript(url: string): Promise<{
 
     return { text: transcript, title, videoId };
   } catch (error) {
-    if (error instanceof Error) {
-      throw error;
-    }
+    if (error instanceof Error) throw error;
     throw new Error(`Failed to fetch YouTube transcript: ${String(error)}`);
   }
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/** Decode \\uXXXX escapes that appear inside JSON-embedded strings */
+function decodeJsonUnicode(s: string): string {
+  return s.replace(/\\u([0-9a-fA-F]{4})/g, (_, hex) =>
+    String.fromCharCode(parseInt(hex, 16))
+  );
+}
+
+/**
+ * Fallback: Fetch transcript from YouTube's timedtext API
+ */
+async function fetchTimedText(videoId: string): Promise<string> {
+  const headers = {
+    "User-Agent":
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+  };
+
+  // Try manual English captions first, then auto-generated
+  for (const kind of ["", "asr"]) {
+    const qs = kind ? `&kind=${kind}` : "";
+    const url = `https://www.youtube.com/api/timedtext?v=${videoId}&lang=en${qs}&fmt=srv3`;
+    const resp = await fetch(url, { headers });
+    if (resp.ok) {
+      const xml = await resp.text();
+      const text = parseCaptionXml(xml);
+      if (text.length > 0) return text;
+    }
+  }
+
+  return "";
 }
 
 /**
