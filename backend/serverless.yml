@@ -122,7 +122,6 @@ resources:
                 - "*"
               MaxAge: 3600
 
-resources:
   Outputs:
     ApiUrl:
       Description: API Gateway endpoint URL
