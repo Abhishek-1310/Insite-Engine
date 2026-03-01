@@ -6,7 +6,7 @@ provider:
   name: aws
   runtime: nodejs20.x
   stage: ${opt:stage, 'dev'}
-  region: ap-south-2
+  region: us-east-1
   timeout: 30
   memorySize: 512
   environment:
@@ -41,11 +41,12 @@ provider:
       allowCredentials: false
 
 custom:
-  uploadBucket: insight-engine-uploads-${self:provider.stage}-${aws:accountId}
+  uploadBucket: insight-engine-uploads-${self:provider.stage}
   esbuild:
     bundle: true
     minify: false
     sourcemap: true
+    exclude: []
     target: node20
     platform: node
     concurrency: 10
@@ -55,7 +56,6 @@ plugins:
   - serverless-dotenv-plugin
 
 functions:
-  # --- Module 2: Ingestion ---
   getUploadUrl:
     handler: src/handlers/upload.getPresignedUrl
     events:
@@ -74,7 +74,6 @@ functions:
           rules:
             - prefix: uploads/
 
-  # --- YouTube URL Ingestion ---
   ingestUrl:
     handler: src/handlers/ingestUrl.handler
     timeout: 120
@@ -84,7 +83,6 @@ functions:
           path: /ingest-url
           method: POST
 
-  # --- Module 3: Chat & Retrieval ---
   ask:
     handler: src/handlers/ask.handler
     timeout: 60
@@ -94,7 +92,6 @@ functions:
           path: /ask
           method: POST
 
-  # --- Document Management ---
   listDocuments:
     handler: src/handlers/documents.listDocuments
     events:
@@ -110,32 +107,8 @@ functions:
           method: DELETE
 
 resources:
-  Resources:
-    S3BucketInsigestengineuploadsdev:
-      Type: AWS::S3::Bucket
-      Properties:
-        BucketName: ${self:custom.uploadBucket}
-        CorsConfiguration:
-          CorsRules:
-            - AllowedHeaders:
-                - "*"
-              AllowedMethods:
-                - GET
-                - PUT
-                - POST
-              AllowedOrigins:
-                - "*"
-              MaxAge: 3600
-        LifecycleConfiguration:
-          Rules:
-            - Id: AutoCleanup
-              Status: Enabled
-              ExpirationInDays: 90
-
   Outputs:
     ApiUrl:
       Description: API Gateway endpoint URL
       Value: !Sub "https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com"
-    UploadBucketName:
-      Description: S3 Upload Bucket Name
-      Value: !Ref S3BucketInsigestengineuploadsdev
+ 
