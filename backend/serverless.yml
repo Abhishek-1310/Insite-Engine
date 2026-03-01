@@ -105,6 +105,22 @@ functions:
       - httpApi:
           path: /documents/{documentId}
           method: DELETE
+resources:
+  Resources:
+    S3BucketInsightengineuploadsdev:
+      Type: AWS::S3::Bucket
+      Properties:
+        CorsConfiguration:
+          CorsRules:
+            - AllowedHeaders:
+                - "*"
+              AllowedMethods:
+                - GET
+                - PUT
+                - POST
+              AllowedOrigins:
+                - "*"
+              MaxAge: 3600
 
 resources:
   Outputs:
