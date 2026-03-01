@@ -103,6 +103,16 @@ export async function handler(
     const message =
       error instanceof Error ? error.message : "Unknown error occurred";
     console.error("❌ Error processing YouTube URL:", message);
+    if (
+      message.includes("No captions") ||
+      message.includes("transcript") ||
+      message.includes("subtitles")
+    ) {
+      return errorResponse(
+        422,
+        "No transcript available for this video. Please try a video with captions/subtitles enabled."
+      );
+    }
     return errorResponse(500, "Failed to process YouTube video", message);
   }
 }

@@ -71,7 +71,8 @@ functions:
       - s3:
           bucket: ${self:custom.uploadBucket}
           event: s3:ObjectCreated:*
-          existing: true
+          rules:
+            - prefix: uploads/
 
   # --- YouTube URL Ingestion ---
   ingestUrl:
