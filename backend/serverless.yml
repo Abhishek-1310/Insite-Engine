@@ -1,4 +1,4 @@
-service: insight-engine-v1
+service: insight-engine
 
 frameworkVersion: "3"
 
@@ -41,7 +41,7 @@ provider:
       allowCredentials: false
 
 custom:
-  uploadBucket: insight-engine-v1-uploads-${self:provider.stage}-${aws:accountId}
+  uploadBucket: insight-engine-uploads-${self:provider.stage}-${aws:accountId}
   esbuild:
     bundle: true
     minify: false
@@ -111,7 +111,7 @@ functions:
 
 resources:
   Resources:
-    UploadBucket:
+    S3BucketInsigestengineuploadsdev:
       Type: AWS::S3::Bucket
       Properties:
         BucketName: ${self:custom.uploadBucket}
@@ -138,4 +138,4 @@ resources:
       Value: !Sub "https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com"
     UploadBucketName:
       Description: S3 Upload Bucket Name
-      Value: !Ref UploadBucket
+      Value: !Ref S3BucketInsigestengineuploadsdev
