@@ -4,11 +4,11 @@ import { config } from "../config";
 const genAI = new GoogleGenerativeAI(config.geminiApiKey);
 
 /**
- * Generate embeddings using Gemini REST API v1 directly
- * The SDK uses v1beta which doesn't support gemini-embedding-001
+ * Generate embeddings using Gemini REST API v1beta directly
+ * The embedContent endpoint requires v1beta for gemini-embedding-001
  */
 async function callEmbeddingAPI(text: string): Promise<number[]> {
-  const url = `https://generativelanguage.googleapis.com/v1/models/${config.embeddingModel}:embedContent?key=${config.geminiApiKey}`;
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${config.embeddingModel}:embedContent?key=${config.geminiApiKey}`;
 
   const response = await fetch(url, {
     method: "POST",

@@ -1,6 +1,8 @@
 /**
  * YouTube transcript extraction service
- * Fetches captions/transcript from a YouTube video for RAG ingestion
+ * Uses YouTube's Innertube API to fetch captions reliably from server environments.
+ * The old HTML-scraping approach fails from AWS Lambda because YouTube
+ * returns consent/bot-check pages to datacenter IPs.
  */
 
 const YOUTUBE_URL_PATTERNS = [
@@ -9,6 +11,17 @@ const YOUTUBE_URL_PATTERNS = [
   /(?:https?:\/\/)?(?:www\.)?youtube\.com\/embed\/([a-zA-Z0-9_-]{11})/,
   /(?:https?:\/\/)?(?:www\.)?youtube\.com\/shorts\/([a-zA-Z0-9_-]{11})/,
 ];
+
+const INNERTUBE_API_KEY = "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8";
+const INNERTUBE_BASE = "https://www.youtube.com/youtubei/v1";
+const INNERTUBE_CONTEXT = {
+  client: {
+    clientName: "WEB",
+    clientVersion: "2.20240101.00.00",
+    hl: "en",
+    gl: "US",
+  },
+};
 
 /**
  * Extract the video ID from a YouTube URL
@@ -31,8 +44,8 @@ export function isYouTubeUrl(url: string): boolean {
 }
 
 /**
- * Fetch the transcript/captions from a YouTube video.
- * Uses the YouTube page's embedded captions data (no API key needed).
+ * Fetch the transcript/captions from a YouTube video using Innertube API.
+ * This works reliably from AWS Lambda (no HTML scraping needed).
  */
 export async function fetchYouTubeTranscript(url: string): Promise<{
   text: string;
@@ -45,30 +58,61 @@ export async function fetchYouTubeTranscript(url: string): Promise<{
   }
 
   try {
-    // Fetch the YouTube video page
-    const pageUrl = `https://www.youtube.com/watch?v=${videoId}`;
-    const response = await fetch(pageUrl, {
-      headers: {
-        "User-Agent":
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept-Language": "en-US,en;q=0.9",
-      },
-    });
+    // Step 1: Get video info (title + caption tracks) via Innertube player endpoint
+    const playerResponse = await fetch(
+      `${INNERTUBE_BASE}/player?key=${INNERTUBE_API_KEY}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          context: INNERTUBE_CONTEXT,
+          videoId,
+        }),
+      }
+    );
 
-    if (!response.ok) {
-      throw new Error(`Failed to fetch YouTube page: ${response.status}`);
+    if (!playerResponse.ok) {
+      throw new Error(`Innertube player API error: ${playerResponse.status}`);
     }
 
-    const html = await response.text();
+    const playerData = (await playerResponse.json()) as Record<string, any>;
 
-    // Extract title
-    const titleMatch = html.match(/<title>(.+?)<\/title>/);
-    const title = titleMatch
-      ? titleMatch[1].replace(" - YouTube", "").trim()
-      : `YouTube Video ${videoId}`;
+    const title =
+      playerData?.videoDetails?.title || `YouTube Video ${videoId}`;
 
-    // Extract captions/transcript from the page data
-    const transcript = await extractCaptionsFromPage(html, videoId);
+    // Get caption tracks from player response
+    const captionTracks =
+      playerData?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
+
+    if (!captionTracks || captionTracks.length === 0) {
+      throw new Error(
+        "No captions/transcript available for this video. The video may not have subtitles enabled."
+      );
+    }
+
+    // Prefer manual English > auto-generated English > first available
+    const englishManual = captionTracks.find(
+      (t: { languageCode: string; kind?: string }) =>
+        t.languageCode === "en" && t.kind !== "asr"
+    );
+    const englishAuto = captionTracks.find(
+      (t: { languageCode: string; kind?: string }) =>
+        t.languageCode === "en" && t.kind === "asr"
+    );
+    const selectedTrack = englishManual || englishAuto || captionTracks[0];
+
+    if (!selectedTrack?.baseUrl) {
+      throw new Error("No usable caption track found for this video.");
+    }
+
+    // Step 2: Fetch the captions XML from the baseUrl
+    const captionResponse = await fetch(selectedTrack.baseUrl);
+    if (!captionResponse.ok) {
+      throw new Error(`Failed to fetch captions XML: ${captionResponse.status}`);
+    }
+
+    const captionXml = await captionResponse.text();
+    const transcript = parseCaptionXml(captionXml);
 
     if (!transcript || transcript.trim().length === 0) {
       throw new Error(
@@ -76,11 +120,7 @@ export async function fetchYouTubeTranscript(url: string): Promise<{
       );
     }
 
-    return {
-      text: transcript,
-      title,
-      videoId,
-    };
+    return { text: transcript, title, videoId };
   } catch (error) {
     if (error instanceof Error) {
       throw error;
@@ -90,114 +130,22 @@ export async function fetchYouTubeTranscript(url: string): Promise<{
 }
 
 /**
- * Extract captions from the YouTube page HTML
- */
-async function extractCaptionsFromPage(
-  html: string,
-  videoId: string
-): Promise<string> {
-  // Look for captions track URL in the page data
-  const captionTrackPattern =
-    /"captionTracks":\s*\[(.*?)\]/s;
-  const match = html.match(captionTrackPattern);
-
-  if (!match) {
-    // Fallback: try to extract from timedtext API
-    return await fetchTimedText(videoId);
-  }
-
-  try {
-    // Parse the caption tracks to find English or auto-generated captions
-    const tracksJson = `[${match[1]}]`;
-    const tracks = JSON.parse(tracksJson);
-
-    // Prefer manual English captions, then auto-generated
-    let captionUrl = "";
-    const englishTrack = tracks.find(
-      (t: { languageCode: string; kind?: string }) =>
-        t.languageCode === "en" && t.kind !== "asr"
-    );
-    const autoTrack = tracks.find(
-      (t: { languageCode: string; kind?: string }) =>
-        t.languageCode === "en" && t.kind === "asr"
-    );
-    const anyTrack = tracks[0];
-
-    const selectedTrack = englishTrack || autoTrack || anyTrack;
-
-    if (selectedTrack && selectedTrack.baseUrl) {
-      captionUrl = selectedTrack.baseUrl;
-    }
-
-    if (!captionUrl) {
-      return await fetchTimedText(videoId);
-    }
-
-    // Fetch the captions XML
-    const captionResponse = await fetch(captionUrl);
-    if (!captionResponse.ok) {
-      return await fetchTimedText(videoId);
-    }
-
-    const captionXml = await captionResponse.text();
-    return parseCaptionXml(captionXml);
-  } catch {
-    return await fetchTimedText(videoId);
-  }
-}
-
-/**
- * Fallback: Fetch transcript from YouTube's timedtext API
- */
-async function fetchTimedText(videoId: string): Promise<string> {
-  const timedTextUrl = `https://www.youtube.com/api/timedtext?v=${videoId}&lang=en&fmt=srv3`;
-
-  const response = await fetch(timedTextUrl, {
-    headers: {
-      "User-Agent":
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-    },
-  });
-
-  if (!response.ok) {
-    // Try auto-generated captions
-    const autoUrl = `https://www.youtube.com/api/timedtext?v=${videoId}&lang=en&kind=asr&fmt=srv3`;
-    const autoResponse = await fetch(autoUrl, {
-      headers: {
-        "User-Agent":
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-      },
-    });
-
-    if (!autoResponse.ok) {
-      return "";
-    }
-
-    const autoXml = await autoResponse.text();
-    return parseCaptionXml(autoXml);
-  }
-
-  const xml = await response.text();
-  return parseCaptionXml(xml);
-}
-
-/**
  * Parse YouTube caption XML into plain text
  */
 function parseCaptionXml(xml: string): string {
-  // Extract text content from <text> elements
   const textPattern = /<text[^>]*>(.*?)<\/text>/gs;
   const segments: string[] = [];
   let textMatch;
 
   while ((textMatch = textPattern.exec(xml)) !== null) {
-    let text = textMatch[1]
+    const text = textMatch[1]
       .replace(/&amp;/g, "&")
       .replace(/&lt;/g, "<")
       .replace(/&gt;/g, ">")
       .replace(/&quot;/g, '"')
       .replace(/&#39;/g, "'")
-      .replace(/<[^>]*>/g, "") // Remove any inner HTML tags
+      .replace(/&#10;/g, " ")
+      .replace(/<[^>]*>/g, "")
       .trim();
 
     if (text.length > 0) {
@@ -206,7 +154,6 @@ function parseCaptionXml(xml: string): string {
   }
 
   // Join segments into natural paragraphs
-  // Group every ~5 sentences into a paragraph for better chunking
   const sentences: string[] = [];
   let current = "";
 
@@ -228,7 +175,7 @@ function parseCaptionXml(xml: string): string {
     sentences.push(current);
   }
 
-  // Group into paragraphs
+  // Group into paragraphs (every ~5 sentences)
   const paragraphs: string[] = [];
   for (let i = 0; i < sentences.length; i += 5) {
     paragraphs.push(sentences.slice(i, i + 5).join(" "));

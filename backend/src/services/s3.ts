@@ -5,6 +5,7 @@ const s3 = new S3Client({});
 
 /**
  * Generate a pre-signed URL for direct S3 upload from the browser
+ * Note: We disable checksum so browsers can PUT without CRC32 headers
  */
 export async function generatePresignedUrl(
   bucket: string,
@@ -17,7 +18,10 @@ export async function generatePresignedUrl(
     Key: key,
     ContentType: contentType,
   });
-  return getSignedUrl(s3, command, { expiresIn });
+  return getSignedUrl(s3, command, {
+    expiresIn,
+    unhoistableHeaders: new Set(["x-amz-checksum-crc32"]),
+  });
 }
 
 /**
@@ -59,4 +63,4 @@ export async function deleteFile(
 ): Promise<void> {
   const command = new DeleteObjectCommand({ Bucket: bucket, Key: key });
   await s3.send(command);
-} 
+}
