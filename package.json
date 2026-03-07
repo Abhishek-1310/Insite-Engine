@@ -8,5 +8,8 @@
     "deploy:frontend": "cd frontend && npm run build"
   },
   "author": "Abhishek",
-  "license": "MIT"
+  "license": "MIT",
+  "dependencies": {
+    "youtube-transcript": "^1.2.1"
+  }
 }
