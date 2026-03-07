@@ -1,10 +1,12 @@
 /**
- * YouTube URL utilities
+ * YouTube service — URL utilities + transcript fetching
  *
- * Transcript fetching is intentionally NOT done here.
- * AWS Lambda IPs are blocked by YouTube — transcripts are fetched
- * client-side in the browser and sent to Lambda as plain text.
+ * Uses the `youtube-transcript` npm package (same approach as
+ * Python's youtube_transcript_api used in Krish Naik's tutorial).
+ * The package fetches the YouTube watch page, extracts captionTracks,
+ * and returns the transcript text.
  */
+import { YoutubeTranscript } from "youtube-transcript";
 
 const YOUTUBE_URL_PATTERNS = [
   /(?:https?:\/\/)?(?:www\.)?youtube\.com\/watch\?.*v=([a-zA-Z0-9_-]{11})/,
@@ -31,4 +33,53 @@ export function extractVideoId(url: string): string | null {
  */
 export function isYouTubeUrl(url: string): boolean {
   return extractVideoId(url) !== null;
+}
+
+/**
+ * Fetch transcript for a YouTube video using the youtube-transcript package.
+ * Returns the full transcript as a single string.
+ */
+export async function fetchTranscript(videoId: string): Promise<string> {
+  console.log(`📝 Fetching transcript for video: ${videoId}`);
+
+  const segments = await YoutubeTranscript.fetchTranscript(videoId, {
+    lang: "en",
+  });
+
+  if (!segments || segments.length === 0) {
+    throw new Error(
+      "No transcript available for this video. Please ensure captions/subtitles are enabled."
+    );
+  }
+
+  const transcript = segments.map((s) => s.text).join(" ");
+  console.log(
+    `✅ Transcript fetched: ${segments.length} segments, ${transcript.length} chars`
+  );
+  return transcript;
+}
+
+/**
+ * Fetch the video title from the YouTube watch page
+ */
+export async function fetchVideoTitle(videoId: string): Promise<string> {
+  try {
+    const resp = await fetch(
+      `https://www.youtube.com/watch?v=${videoId}`,
+      {
+        headers: {
+          "User-Agent":
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_4) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/85.0.4183.83 Safari/537.36",
+        },
+      }
+    );
+    const html = await resp.text();
+    const match = html.match(/<title>(.+?)<\/title>/);
+    if (match) {
+      return match[1].replace(" - YouTube", "").trim();
+    }
+  } catch {
+    // fall through
+  }
+  return `YouTube Video ${videoId}`;
 }
