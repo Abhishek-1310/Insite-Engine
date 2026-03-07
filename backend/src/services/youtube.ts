@@ -54,74 +54,100 @@ export async function fetchYouTubeTranscript(url: string): Promise<{
     console.log("Fetching YouTube page...");
 
     const watchUrl = `https://www.youtube.com/watch?v=${videoId}`;
-
     const pageResponse = await fetch(watchUrl, { headers });
-
-    if (!pageResponse.ok) {
-      throw new Error(`Failed to fetch YouTube page: ${pageResponse.status}`);
-    }
 
     const html = await pageResponse.text();
 
     console.log("HTML length:", html.length);
 
-    /**
-     * Extract title
-     */
+    // Extract title
     const titleMatch = html.match(/<title>(.*?)<\/title>/);
-
     const title = titleMatch
       ? titleMatch[1].replace(" - YouTube", "")
       : `YouTube Video ${videoId}`;
 
-    console.log("Fetching caption list...");
+    let transcript = "";
 
-    /**
-     * Step 2: Get caption list
-     */
-    const captionListUrl = `https://www.youtube.com/api/timedtext?type=list&v=${videoId}`;
+    // =============================
+    // Method 1: Caption list API
+    // =============================
+    try {
+      console.log("Trying caption list API...");
 
-    const capListResp = await fetch(captionListUrl, { headers });
+      const captionListUrl = `https://www.youtube.com/api/timedtext?type=list&v=${videoId}`;
 
-    if (!capListResp.ok) {
-      throw new Error("Failed to fetch caption list");
+      const capListResp = await fetch(captionListUrl, { headers });
+      const capXml = await capListResp.text();
+
+      const langMatch = capXml.match(/lang_code="([^"]+)"/);
+
+      if (langMatch) {
+        const lang = langMatch[1];
+
+        const transcriptUrl = `https://www.youtube.com/api/timedtext?v=${videoId}&lang=${lang}&fmt=srv3`;
+
+        const resp = await fetch(transcriptUrl, { headers });
+
+        const xml = await resp.text();
+
+        transcript = parseCaptionXml(xml);
+      }
+    } catch (e) {
+      console.log("Caption list method failed");
     }
 
-    const capXml = await capListResp.text();
+    // =============================
+    // Method 2: Auto captions
+    // =============================
+    if (!transcript) {
+      try {
+        console.log("Trying auto captions...");
 
-    if (!capXml || capXml.trim().length === 0) {
-      throw new Error(
-        "No captions/transcript available for this video. The video may not have subtitles enabled."
-      );
+        const autoUrl = `https://www.youtube.com/api/timedtext?v=${videoId}&lang=en&kind=asr&fmt=srv3`;
+
+        const resp = await fetch(autoUrl, { headers });
+
+        const xml = await resp.text();
+
+        transcript = parseCaptionXml(xml);
+      } catch {
+        console.log("Auto captions failed");
+      }
     }
 
-    /**
-     * Extract language
-     */
-    const langMatch = capXml.match(/lang_code="([^"]+)"/);
+    // =============================
+    // Method 3: Extract from page
+    // =============================
+    if (!transcript) {
+      try {
+        console.log("Trying ytInitialPlayerResponse...");
 
-    const lang = langMatch ? langMatch[1] : "en";
+        const playerMatch = html.match(/ytInitialPlayerResponse\s*=\s*(\{.*?\});/s);
 
-    console.log("Caption language:", lang);
+        if (playerMatch) {
+          const playerData = JSON.parse(playerMatch[1]);
 
-    /**
-     * Step 3: Fetch transcript
-     */
-    const transcriptUrl = `https://www.youtube.com/api/timedtext?v=${videoId}&lang=${lang}&fmt=srv3`;
+          const tracks =
+            playerData?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
 
-    const transcriptResp = await fetch(transcriptUrl, { headers });
+          if (tracks && tracks.length > 0) {
+            const track = tracks[0];
 
-    if (!transcriptResp.ok) {
-      throw new Error("Failed to fetch transcript");
+            const resp = await fetch(track.baseUrl, { headers });
+
+            const xml = await resp.text();
+
+            transcript = parseCaptionXml(xml);
+          }
+        }
+      } catch {
+        console.log("ytInitialPlayerResponse method failed");
+      }
     }
-
-    const xml = await transcriptResp.text();
-
-    const transcript = parseCaptionXml(xml);
 
     if (!transcript || transcript.trim().length === 0) {
       throw new Error(
-        "No captions/transcript available for this video. The video may not have subtitles enabled."
+        "No captions/transcript available for this video."
       );
     }
 
