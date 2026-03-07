@@ -95,14 +95,17 @@ export async function fetchYouTubeTranscriptInBrowser(
   const videoId = extractVideoId(url);
   if (!videoId) throw new Error("Invalid YouTube URL");
 
-  // ── Strategy 1: scrape captionTracks from the watch page via CORS proxy ────
-  // Direct fetch to youtube.com is blocked by CORS from the browser.
-  // corsproxy.io forwards the request and adds the missing CORS headers.
-  const CORS_PROXY = "https://corsproxy.io/?url=";
+  /**
+   * Our own Vercel serverless proxy — fetches YouTube server-side with
+   * real browser headers. Vercel IPs are not blocked by YouTube.
+   */
+  const proxyFetch = async (ytUrl: string): Promise<Response> => {
+    return fetch(`/api/youtube-proxy?url=${encodeURIComponent(ytUrl)}`);
+  };
+
+  // ── Strategy 1: scrape captionTracks from the watch page ─────────────────
   try {
-    const pageResp = await fetch(
-      `${CORS_PROXY}${encodeURIComponent(`https://www.youtube.com/watch?v=${videoId}`)}`
-    );
+    const pageResp = await proxyFetch(`https://www.youtube.com/watch?v=${videoId}`);
     if (pageResp.ok) {
       const html = await pageResp.text();
 
@@ -125,10 +128,7 @@ export async function fetchYouTubeTranscriptInBrowser(
           tracks[0];
 
         if (pick?.baseUrl) {
-          // The captionTrack baseUrl also needs the CORS proxy
-          const capResp = await fetch(
-            `${CORS_PROXY}${encodeURIComponent(pick.baseUrl)}`
-          );
+          const capResp = await proxyFetch(pick.baseUrl);
           if (capResp.ok) {
             const xml = await capResp.text();
             const transcript = parseCaptionXml(xml);
@@ -154,9 +154,8 @@ export async function fetchYouTubeTranscriptInBrowser(
   for (const { lang, kind } of langCombos) {
     const qs = kind ? `&kind=${kind}` : "";
     const ytUrl = `https://www.youtube.com/api/timedtext?v=${videoId}&lang=${lang}${qs}&fmt=srv3`;
-    const apiUrl = `${CORS_PROXY}${encodeURIComponent(ytUrl)}`;
     try {
-      const resp = await fetch(apiUrl);
+      const resp = await proxyFetch(ytUrl);
       if (resp.ok) {
         const xml = await resp.text();
         const transcript = parseCaptionXml(xml);
@@ -327,3 +326,4 @@ export async function ingestYouTubeUrl(
   console.log("✅ Lambda success:", result);
   return result;
 }
+
