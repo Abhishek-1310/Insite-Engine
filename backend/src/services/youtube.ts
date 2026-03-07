@@ -33,6 +33,7 @@ export function isYouTubeUrl(url: string): boolean {
 /**
  * Fetch transcript
  */
+
 export async function fetchYouTubeTranscript(url: string): Promise<{
   text: string;
   title: string;
@@ -46,21 +47,15 @@ export async function fetchYouTubeTranscript(url: string): Promise<{
 
   const headers = {
     "User-Agent":
-      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/125 Safari/537.36",
-    "Accept-Language": "en-US,en;q=0.9",
-    Accept: "text/html",
-    Cookie: "CONSENT=YES+1",
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
   };
 
   try {
     console.log("Fetching YouTube page...");
 
-    const pageUrl = `https://www.youtube.com/watch?v=${videoId}`;
+    const watchUrl = `https://www.youtube.com/watch?v=${videoId}`;
 
-    const pageResponse = await fetch(pageUrl, {
-      headers,
-      redirect: "follow",
-    });
+    const pageResponse = await fetch(watchUrl, { headers });
 
     if (!pageResponse.ok) {
       throw new Error(`Failed to fetch YouTube page: ${pageResponse.status}`);
@@ -73,57 +68,56 @@ export async function fetchYouTubeTranscript(url: string): Promise<{
     /**
      * Extract title
      */
-    const titleMatch = html.match(/"title":"(.*?)"/);
+    const titleMatch = html.match(/<title>(.*?)<\/title>/);
+
     const title = titleMatch
-      ? decodeJsonUnicode(titleMatch[1])
+      ? titleMatch[1].replace(" - YouTube", "")
       : `YouTube Video ${videoId}`;
 
+    console.log("Fetching caption list...");
+
     /**
-     * Extract captions from ytInitialPlayerResponse
+     * Step 2: Get caption list
      */
-    let transcript = "";
+    const captionListUrl = `https://www.youtube.com/api/timedtext?type=list&v=${videoId}`;
 
-    const playerResponseMatch = html.match(
-      /ytInitialPlayerResponse\s*=\s*(\{.+?\});/
-    );
+    const capListResp = await fetch(captionListUrl, { headers });
 
-    if (playerResponseMatch) {
-      try {
-        const playerResponse = JSON.parse(playerResponseMatch[1]);
+    if (!capListResp.ok) {
+      throw new Error("Failed to fetch caption list");
+    }
 
-        const tracks =
-          playerResponse?.captions?.playerCaptionsTracklistRenderer
-            ?.captionTracks;
+    const capXml = await capListResp.text();
 
-        if (tracks && tracks.length > 0) {
-          console.log(`Found ${tracks.length} caption tracks`);
-
-          const pick =
-            tracks.find((t: any) => t.languageCode === "en" && t.kind !== "asr") ||
-            tracks.find((t: any) => t.languageCode === "en") ||
-            tracks[0];
-
-          if (pick?.baseUrl) {
-            const capResp = await fetch(pick.baseUrl, { headers });
-
-            if (capResp.ok) {
-              const xml = await capResp.text();
-              transcript = parseCaptionXml(xml);
-            }
-          }
-        }
-      } catch (err) {
-        console.log("Caption JSON parse failed");
-      }
+    if (!capXml || capXml.trim().length === 0) {
+      throw new Error(
+        "No captions/transcript available for this video. The video may not have subtitles enabled."
+      );
     }
 
     /**
-     * Fallback to timedtext API
+     * Extract language
      */
-    if (!transcript) {
-      console.log("Trying fallback timedtext API...");
-      transcript = await fetchTimedText(videoId);
+    const langMatch = capXml.match(/lang_code="([^"]+)"/);
+
+    const lang = langMatch ? langMatch[1] : "en";
+
+    console.log("Caption language:", lang);
+
+    /**
+     * Step 3: Fetch transcript
+     */
+    const transcriptUrl = `https://www.youtube.com/api/timedtext?v=${videoId}&lang=${lang}&fmt=srv3`;
+
+    const transcriptResp = await fetch(transcriptUrl, { headers });
+
+    if (!transcriptResp.ok) {
+      throw new Error("Failed to fetch transcript");
     }
+
+    const xml = await transcriptResp.text();
+
+    const transcript = parseCaptionXml(xml);
 
     if (!transcript || transcript.trim().length === 0) {
       throw new Error(
@@ -131,7 +125,7 @@ export async function fetchYouTubeTranscript(url: string): Promise<{
       );
     }
 
-    console.log(`Transcript length: ${transcript.length}`);
+    console.log("Transcript length:", transcript.length);
 
     return {
       text: transcript,
@@ -139,49 +133,54 @@ export async function fetchYouTubeTranscript(url: string): Promise<{
       videoId,
     };
   } catch (error) {
-    if (error instanceof Error) throw error;
-    throw new Error(`Failed to fetch YouTube transcript: ${String(error)}`);
+    console.error("Transcript fetch error:", error);
+
+    if (error instanceof Error) {
+      throw new Error(error.message);
+    }
+
+    throw new Error("Failed to fetch YouTube transcript");
   }
 }
 
 /**
  * Fallback transcript API
  */
-async function fetchTimedText(videoId: string): Promise<string> {
-  const headers = {
-    "User-Agent":
-      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-  };
+// async function fetchTimedText(videoId: string): Promise<string> {
+//   const headers = {
+//     "User-Agent":
+//       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+//   };
 
-  for (const kind of ["", "asr"]) {
-    const qs = kind ? `&kind=${kind}` : "";
+//   for (const kind of ["", "asr"]) {
+//     const qs = kind ? `&kind=${kind}` : "";
 
-    const url = `https://www.youtube.com/api/timedtext?v=${videoId}&lang=en${qs}&fmt=srv3`;
+//     const url = `https://www.youtube.com/api/timedtext?v=${videoId}&lang=en${qs}&fmt=srv3`;
 
-    const resp = await fetch(url, { headers });
+//     const resp = await fetch(url, { headers });
 
-    if (resp.ok) {
-      const xml = await resp.text();
+//     if (resp.ok) {
+//       const xml = await resp.text();
 
-      const text = parseCaptionXml(xml);
+//       const text = parseCaptionXml(xml);
 
-      if (text.length > 0) {
-        return text;
-      }
-    }
-  }
+//       if (text.length > 0) {
+//         return text;
+//       }
+//     }
+//   }
 
-  return "";
-}
+//   return "";
+// }
 
 /**
  * Decode unicode characters
  */
-function decodeJsonUnicode(s: string): string {
-  return s.replace(/\\u([0-9a-fA-F]{4})/g, (_, hex) =>
-    String.fromCharCode(parseInt(hex, 16))
-  );
-}
+// function decodeJsonUnicode(s: string): string {
+//   return s.replace(/\\u([0-9a-fA-F]{4})/g, (_, hex) =>
+//     String.fromCharCode(parseInt(hex, 16))
+//   );
+// }
 
 /**
  * Convert caption XML to text
