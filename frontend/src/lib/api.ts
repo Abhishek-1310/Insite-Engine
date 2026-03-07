@@ -82,7 +82,11 @@ function parseCaptionXml(xml: string): string {
 
 /**
  * Fetch a YouTube transcript entirely in the browser.
- * Uses YouTube's public timedtext API — no API key required.
+ *
+ * Strategy:
+ *  1. Fetch the YouTube watch page to extract captionTracks URLs (most reliable)
+ *  2. Fallback to timedtext API with multiple lang/kind combos
+ *
  * Works from a browser; blocked from Lambda/server IPs.
  */
 export async function fetchYouTubeTranscriptInBrowser(
@@ -91,30 +95,73 @@ export async function fetchYouTubeTranscriptInBrowser(
   const videoId = extractVideoId(url);
   if (!videoId) throw new Error("Invalid YouTube URL");
 
-  // Try manual English captions first, then auto-generated (asr)
-  for (const kind of ["", "asr"]) {
+  // ── Strategy 1: scrape captionTracks from the watch page ──────────────────
+  try {
+    const pageResp = await fetch(`https://www.youtube.com/watch?v=${videoId}`);
+    if (pageResp.ok) {
+      const html = await pageResp.text();
+
+      // Extract page title
+      const titleMatch = html.match(/<title>(.+?)<\/title>/);
+      const rawTitle = titleMatch
+        ? titleMatch[1].replace(" - YouTube", "").trim()
+        : `YouTube Video ${videoId}`;
+
+      // Extract captionTracks JSON array
+      const ctMatch = html.match(/"captionTracks"\s*:\s*(\[.*?\])/s);
+      if (ctMatch) {
+        type CaptionTrack = { baseUrl: string; languageCode: string; kind?: string };
+        const tracks: CaptionTrack[] = JSON.parse(ctMatch[1]);
+
+        // Prefer manual English > auto English > first available
+        const pick =
+          tracks.find((t) => t.languageCode === "en" && t.kind !== "asr") ||
+          tracks.find((t) => t.languageCode === "en") ||
+          tracks[0];
+
+        if (pick?.baseUrl) {
+          const capResp = await fetch(pick.baseUrl);
+          if (capResp.ok) {
+            const xml = await capResp.text();
+            const transcript = parseCaptionXml(xml);
+            if (transcript.length > 50) {
+              return { transcript, title: rawTitle, videoId };
+            }
+          }
+        }
+      }
+    }
+  } catch {
+    // fall through to strategy 2
+  }
+
+  // ── Strategy 2: timedtext API fallback ────────────────────────────────────
+  const langCombos = [
+    { lang: "en", kind: "" },
+    { lang: "en", kind: "asr" },
+    { lang: "en-US", kind: "" },
+    { lang: "en-GB", kind: "" },
+  ];
+
+  for (const { lang, kind } of langCombos) {
     const qs = kind ? `&kind=${kind}` : "";
-    const apiUrl = `https://www.youtube.com/api/timedtext?v=${videoId}&lang=en${qs}&fmt=srv3`;
+    const apiUrl = `https://www.youtube.com/api/timedtext?v=${videoId}&lang=${lang}${qs}&fmt=srv3`;
     try {
       const resp = await fetch(apiUrl);
       if (resp.ok) {
         const xml = await resp.text();
         const transcript = parseCaptionXml(xml);
         if (transcript.length > 50) {
-          return {
-            transcript,
-            title: `YouTube Video ${videoId}`,
-            videoId,
-          };
+          return { transcript, title: `YouTube Video ${videoId}`, videoId };
         }
       }
     } catch {
-      // try next kind
+      // try next combo
     }
   }
 
   throw new Error(
-    "No captions found for this video. Please try a video with subtitles/captions enabled."
+    "No captions found for this video. Please try a video with captions/subtitles enabled."
   );
 }
 
@@ -237,22 +284,37 @@ export async function ingestYouTubeUrl(
   onStatus?: (msg: string) => void
 ): Promise<IngestUrlResponse> {
   // Step 1: fetch transcript in the browser
+  console.log("🎬 Step 1: Fetching transcript in browser for:", url);
   onStatus?.("Fetching transcript...");
-  const { transcript, title, videoId } = await fetchYouTubeTranscriptInBrowser(url);
-  console.log(`✅ Transcript fetched for ${videoId} (${transcript.length} chars)`);
+
+  let transcript: string, title: string, videoId: string;
+  try {
+    ({ transcript, title, videoId } = await fetchYouTubeTranscriptInBrowser(url));
+    console.log(`✅ Transcript fetched for ${videoId} — ${transcript.length} chars`);
+  } catch (err) {
+    console.error("❌ Transcript fetch failed:", err);
+    throw err;
+  }
 
   // Step 2: send to Lambda
+  console.log("📤 Step 2: Sending transcript to Lambda...");
   onStatus?.("Indexing transcript...");
+
   const response = await fetch(`${API_BASE_URL}/ingest-url`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ url, transcript, title }),
   });
 
+  console.log("📥 Lambda response status:", response.status);
+
   if (!response.ok) {
     const error = await response.json();
+    console.error("❌ Lambda error:", error);
     throw new Error(error.error || "Failed to process YouTube video");
   }
 
-  return response.json();
+  const result = await response.json();
+  console.log("✅ Lambda success:", result);
+  return result;
 }
