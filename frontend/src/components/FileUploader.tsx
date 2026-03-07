@@ -35,6 +35,7 @@ export default function FileUploader({ onUploadComplete }: FileUploaderProps) {
   const [errorMessage, setErrorMessage] = useState("");
   const [youtubeUrl, setYoutubeUrl] = useState("");
   const [resultMessage, setResultMessage] = useState("");
+  const [youtubeStatusMsg, setYoutubeStatusMsg] = useState("");
 
   // ─── File Upload (PDF + Images) ─────────────────────────────────
 
@@ -117,9 +118,13 @@ export default function FileUploader({ onUploadComplete }: FileUploaderProps) {
       try {
         setStatus("processing");
         setFileName(url);
+        setYoutubeStatusMsg("");
 
-        const result = await ingestYouTubeUrl(url);
+        const result = await ingestYouTubeUrl(url, (msg) =>
+          setYoutubeStatusMsg(msg)
+        );
 
+        setYoutubeStatusMsg("");
         setStatus("success");
         setResultMessage(
           `"${result.documentName}" processed — ${result.chunksCreated} chunks indexed!`
@@ -132,6 +137,7 @@ export default function FileUploader({ onUploadComplete }: FileUploaderProps) {
           setResultMessage("");
         }, 4000);
       } catch (error) {
+        setYoutubeStatusMsg("");
         setStatus("error");
         setErrorMessage(
           error instanceof Error ? error.message : "Failed to process video"
@@ -164,49 +170,49 @@ export default function FileUploader({ onUploadComplete }: FileUploaderProps) {
         {(status === "getting-url" ||
           status === "uploading" ||
           status === "processing") && (
-          <>
-            <div className="p-3 rounded-2xl bg-primary-500/10">
-              <Loader2 className="w-7 h-7 text-primary-400 animate-spin" />
-            </div>
-
-            {status === "getting-url" && (
-              <p className="text-sm text-primary-300">Preparing upload...</p>
-            )}
-
-            {status === "uploading" && (
-              <div className="w-full max-w-xs">
-                <div className="flex items-center gap-2 mb-2">
-                  <FileText className="w-4 h-4 text-primary-400" />
-                  <p className="text-sm text-dark-200 truncate">{fileName}</p>
-                </div>
-                <div className="w-full bg-dark-800 rounded-full h-2 overflow-hidden">
-                  <div
-                    className="bg-gradient-to-r from-primary-500 to-primary-400 h-full rounded-full transition-all duration-300"
-                    style={{ width: `${progress}%` }}
-                  />
-                </div>
-                <p className="text-xs text-dark-400 mt-1 text-right">
-                  {progress}%
-                </p>
+            <>
+              <div className="p-3 rounded-2xl bg-primary-500/10">
+                <Loader2 className="w-7 h-7 text-primary-400 animate-spin" />
               </div>
-            )}
 
-            {status === "processing" && (
-              <div>
-                <p className="text-sm text-primary-300 font-medium">
-                  {activeTab === "youtube"
-                    ? "Fetching transcript & indexing..."
-                    : "Processing document..."}
-                </p>
-                <p className="text-xs text-dark-400 mt-1">
-                  {activeTab === "youtube"
-                    ? "Extracting captions, generating embeddings & indexing"
-                    : "Extracting content, generating embeddings & indexing"}
-                </p>
-              </div>
-            )}
-          </>
-        )}
+              {status === "getting-url" && (
+                <p className="text-sm text-primary-300">Preparing upload...</p>
+              )}
+
+              {status === "uploading" && (
+                <div className="w-full max-w-xs">
+                  <div className="flex items-center gap-2 mb-2">
+                    <FileText className="w-4 h-4 text-primary-400" />
+                    <p className="text-sm text-dark-200 truncate">{fileName}</p>
+                  </div>
+                  <div className="w-full bg-dark-800 rounded-full h-2 overflow-hidden">
+                    <div
+                      className="bg-gradient-to-r from-primary-500 to-primary-400 h-full rounded-full transition-all duration-300"
+                      style={{ width: `${progress}%` }}
+                    />
+                  </div>
+                  <p className="text-xs text-dark-400 mt-1 text-right">
+                    {progress}%
+                  </p>
+                </div>
+              )}
+
+              {status === "processing" && (
+                <div>
+                  <p className="text-sm text-primary-300 font-medium">
+                    {activeTab === "youtube"
+                      ? (youtubeStatusMsg || "Processing video...")
+                      : "Processing document..."}
+                  </p>
+                  <p className="text-xs text-dark-400 mt-1">
+                    {activeTab === "youtube"
+                      ? "Fetching captions in browser, then generating embeddings & indexing"
+                      : "Extracting content, generating embeddings & indexing"}
+                  </p>
+                </div>
+              )}
+            </>
+          )}
 
         {/* Success */}
         {status === "success" && (
@@ -258,11 +264,10 @@ export default function FileUploader({ onUploadComplete }: FileUploaderProps) {
         <button
           onClick={() => switchTab("file")}
           disabled={isLocked}
-          className={`flex-1 flex items-center justify-center gap-2 py-2 px-3 rounded-lg text-xs font-medium transition-all duration-200 ${
-            activeTab === "file"
+          className={`flex-1 flex items-center justify-center gap-2 py-2 px-3 rounded-lg text-xs font-medium transition-all duration-200 ${activeTab === "file"
               ? "bg-primary-600 text-white shadow-lg shadow-primary-500/20"
               : "text-dark-400 hover:text-white hover:bg-white/5"
-          } disabled:opacity-50`}
+            } disabled:opacity-50`}
         >
           <FileUp className="w-3.5 h-3.5" />
           PDF / Image
@@ -270,11 +275,10 @@ export default function FileUploader({ onUploadComplete }: FileUploaderProps) {
         <button
           onClick={() => switchTab("youtube")}
           disabled={isLocked}
-          className={`flex-1 flex items-center justify-center gap-2 py-2 px-3 rounded-lg text-xs font-medium transition-all duration-200 ${
-            activeTab === "youtube"
+          className={`flex-1 flex items-center justify-center gap-2 py-2 px-3 rounded-lg text-xs font-medium transition-all duration-200 ${activeTab === "youtube"
               ? "bg-red-600 text-white shadow-lg shadow-red-500/20"
               : "text-dark-400 hover:text-white hover:bg-white/5"
-          } disabled:opacity-50`}
+            } disabled:opacity-50`}
         >
           <Youtube className="w-3.5 h-3.5" />
           YouTube
@@ -294,10 +298,9 @@ export default function FileUploader({ onUploadComplete }: FileUploaderProps) {
               className={`
                 relative overflow-hidden rounded-2xl border-2 border-dashed p-6
                 transition-all duration-300 cursor-pointer
-                ${
-                  isDragActive
-                    ? "border-primary-400 bg-primary-500/10 scale-[1.02]"
-                    : "border-dark-600 hover:border-primary-500/50 hover:bg-white/5"
+                ${isDragActive
+                  ? "border-primary-400 bg-primary-500/10 scale-[1.02]"
+                  : "border-dark-600 hover:border-primary-500/50 hover:bg-white/5"
                 }
               `}
             >
@@ -305,14 +308,12 @@ export default function FileUploader({ onUploadComplete }: FileUploaderProps) {
 
               <div className="flex flex-col items-center justify-center gap-3 text-center">
                 <div
-                  className={`p-3 rounded-2xl transition-colors ${
-                    isDragActive ? "bg-primary-500/20" : "bg-dark-800"
-                  }`}
+                  className={`p-3 rounded-2xl transition-colors ${isDragActive ? "bg-primary-500/20" : "bg-dark-800"
+                    }`}
                 >
                   <Upload
-                    className={`w-7 h-7 ${
-                      isDragActive ? "text-primary-400" : "text-dark-400"
-                    }`}
+                    className={`w-7 h-7 ${isDragActive ? "text-primary-400" : "text-dark-400"
+                      }`}
                   />
                 </div>
                 <div>
