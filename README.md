@@ -247,3 +247,5 @@ Create a Pinecone index with these settings:
 ## 📝 License
 
 MIT License — Built by [Abhishek](https://github.com/Abhishek-1310)
+
+added supadat api and youtube api key 
