@@ -2,19 +2,27 @@
  * YouTube service — URL utilities + transcript fetching
  *
  * Strategy (in order of preference):
- *   1. Fetch watch page → parse ytInitialPlayerResponse (works when YT doesn't block)
- *   2. Direct timedtext API with multiple lang variants
+ *   1. YouTube Data API v3 (official Google API — authenticated, not IP-blocked)
+ *   2. Supadata API (free third-party proxy — bypasses AWS IP blocks)
  *   3. youtube-transcript npm package (last resort)
  *
- * Why not just use youtube-transcript package?
- *   AWS Lambda IPs are well-known cloud IPs. YouTube aggressively rate-limits
- *   and blocks transcript requests from them. We need a more resilient approach.
+ * Why the original approaches failed:
+ *   AWS Lambda IPs are well-known cloud ranges. YouTube blocks ALL unauthenticated
+ *   scraping from them — returning empty bodies or stripped HTML with no captions.
+ *   Authenticated API calls (Strategy 1) bypass this completely.
+ *
+ * Required env vars:
+ *   YOUTUBE_API_KEY  — https://console.cloud.google.com
+ *                      → Enable "YouTube Data API v3" → Create API Key
+ *
+ * Optional env vars (fallback):
+ *   SUPADATA_API_KEY — https://supadata.ai (free: 200 req/day, no credit card)
  */
 
 import { YoutubeTranscript } from "youtube-transcript";
 import { XMLParser } from "fast-xml-parser";
 
-// ─── Constants ────────────────────────────────────────────────────────────────
+// ─── URL helpers ──────────────────────────────────────────────────────────────
 
 const YOUTUBE_URL_PATTERNS = [
   /(?:https?:\/\/)?(?:www\.)?youtube\.com\/watch\?.*v=([a-zA-Z0-9_-]{11})/,
@@ -22,23 +30,6 @@ const YOUTUBE_URL_PATTERNS = [
   /(?:https?:\/\/)?(?:www\.)?youtube\.com\/embed\/([a-zA-Z0-9_-]{11})/,
   /(?:https?:\/\/)?(?:www\.)?youtube\.com\/shorts\/([a-zA-Z0-9_-]{11})/,
 ];
-
-/**
- * Rotate through several real browser User-Agent strings so that repeated
- * Lambda invocations don't always present the same fingerprint.
- */
-const USER_AGENTS = [
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
-  "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) Gecko/20100101 Firefox/125.0",
-];
-
-function randomUA(): string {
-  return USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
-}
-
-// ─── URL helpers ──────────────────────────────────────────────────────────────
 
 export function extractVideoId(url: string): string | null {
   for (const pattern of YOUTUBE_URL_PATTERNS) {
@@ -52,223 +43,218 @@ export function isYouTubeUrl(url: string): boolean {
   return extractVideoId(url) !== null;
 }
 
-// ─── Transcript fetching ──────────────────────────────────────────────────────
+// ─── Main transcript entry point ──────────────────────────────────────────────
 
-/**
- * Main entry point.  Tries three strategies in sequence and returns the
- * first one that succeeds.  Throws only when all three fail.
- */
 export async function fetchTranscript(videoId: string): Promise<string> {
   console.log(`📝 Fetching transcript for video: ${videoId}`);
 
-  const strategies: Array<() => Promise<string>> = [
-    () => fetchTranscriptViaWatchPage(videoId),
-    () => fetchTranscriptViaTimedTextApi(videoId),
-    () => fetchTranscriptViaPackage(videoId),
+  const strategies: Array<{ name: string; fn: () => Promise<string> }> = [
+    { name: "YouTube Data API v3", fn: () => fetchTranscriptViaDataApi(videoId) },
+    { name: "Supadata API", fn: () => fetchTranscriptViaSupadata(videoId) },
+    { name: "youtube-transcript", fn: () => fetchTranscriptViaPackage(videoId) },
   ];
 
   const errors: string[] = [];
 
-  for (let i = 0; i < strategies.length; i++) {
+  for (const strategy of strategies) {
     try {
-      const transcript = await strategies[i]();
+      console.log(`🔍 Trying: ${strategy.name}...`);
+      const transcript = await strategy.fn();
       if (transcript && transcript.trim().length > 50) {
-        console.log(
-          `✅ Strategy ${i + 1} succeeded: ${transcript.length} chars`
-        );
+        console.log(`✅ ${strategy.name} succeeded: ${transcript.length} chars`);
         return transcript;
       }
+      console.warn(`⚠️ ${strategy.name} returned empty transcript, trying next...`);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      console.warn(`⚠️ Strategy ${i + 1} failed: ${msg}`);
-      errors.push(`Strategy ${i + 1}: ${msg}`);
+      console.warn(`⚠️ ${strategy.name} failed: ${msg}`);
+      errors.push(`${strategy.name}: ${msg}`);
     }
   }
 
   console.error("❌ All transcript strategies failed:", errors);
   throw new Error(
     "No transcript available for this video. " +
-    "Please ensure captions/subtitles are enabled, or try a different video."
+    "Please ensure captions/subtitles are enabled, or try a different video.\n" +
+    `Details: ${errors.join(" | ")}`
   );
 }
 
-// ─── Strategy 1: Parse ytInitialPlayerResponse from the watch page ────────────
+// ─── Strategy 1: YouTube Data API v3 ─────────────────────────────────────────
 
 /**
- * Loads the YouTube watch page, pulls the embedded JSON blob
- * (ytInitialPlayerResponse), extracts the captionTracks list, then fetches
- * the best matching caption URL directly.
+ * Uses the official YouTube Data API v3 to list caption tracks,
+ * then fetches the caption content via the timedtext endpoint (authenticated).
  *
- * This is the most reliable approach because:
- *  - It mimics what a real browser does
- *  - It handles both manual and auto-generated (asr) captions
- *  - No dependency on third-party packages
+ * Free quota: 10,000 units/day
+ *   - captions.list  = 50 units
+ *   - timedtext fetch = 0 units (not a quota API call)
+ *
+ * Get your key: https://console.cloud.google.com
+ *   1. Create a project
+ *   2. Enable "YouTube Data API v3"
+ *   3. Create credentials → API Key
+ *   4. Add as YOUTUBE_API_KEY in Lambda env vars
  */
-async function fetchTranscriptViaWatchPage(videoId: string): Promise<string> {
-  console.log("🔍 Strategy 1: Fetching via watch page HTML parse...");
+async function fetchTranscriptViaDataApi(videoId: string): Promise<string> {
+  const apiKey = process.env.YOUTUBE_API_KEY;
+  if (!apiKey) {
+    throw new Error("YOUTUBE_API_KEY environment variable not set");
+  }
 
-  const watchUrl = `https://www.youtube.com/watch?v=${videoId}`;
+  // Step 1: List available caption tracks
+  const listUrl =
+    `https://www.googleapis.com/youtube/v3/captions` +
+    `?part=snippet&videoId=${videoId}&key=${apiKey}`;
 
-  const resp = await fetch(watchUrl, {
+  const listResp = await fetch(listUrl);
+  if (!listResp.ok) {
+    const errBody = await listResp.text();
+    throw new Error(`Captions list API ${listResp.status}: ${errBody}`);
+  }
+
+  const listData = await listResp.json() as any;
+  const items: any[] = listData.items ?? [];
+
+  if (!items.length) {
+    throw new Error("No caption tracks returned by Data API");
+  }
+
+  console.log(
+    `Found ${items.length} caption track(s):`,
+    items.map((i: any) => `${i.snippet?.language}(${i.snippet?.trackKind})`)
+  );
+
+  // Priority: manual en → asr en → any en → first track
+  const track =
+    items.find((i: any) => i.snippet?.language === "en" && i.snippet?.trackKind === "standard") ??
+    items.find((i: any) => i.snippet?.language === "en" && i.snippet?.trackKind === "asr") ??
+    items.find((i: any) => i.snippet?.language?.startsWith("en")) ??
+    items[0];
+
+  const lang: string = track.snippet?.language ?? "en";
+  const trackKind: string = track.snippet?.trackKind ?? "";
+
+  console.log(`Selected track: lang=${lang} kind=${trackKind}`);
+
+  // Step 2: Fetch caption content via timedtext (authenticated with API key)
+  const timedTextUrl =
+    `https://www.youtube.com/api/timedtext` +
+    `?v=${videoId}&lang=${lang}&fmt=json3` +
+    (trackKind === "asr" ? `&kind=asr` : "");
+
+  const captionResp = await fetch(timedTextUrl, {
     headers: {
-      "User-Agent": randomUA(),
-      // Accepting English first, then anything — reduces chance of consent wall
+      "User-Agent":
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
       "Accept-Language": "en-US,en;q=0.9",
-      Accept:
-        "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-      // Bypass GDPR/cookie consent in EU/India by pre-accepting
       Cookie: "CONSENT=YES+; SOCS=CAESEwgDEgk0OTI1MzkxMjkaAmVuIAEaBgiA_LyaBg==",
     },
   });
 
-  if (!resp.ok) {
-    throw new Error(`Watch page responded with HTTP ${resp.status}`);
-  }
-
-  const html = await resp.text();
-
-  // Pull ytInitialPlayerResponse JSON blob from the page
-  const playerRespMatch = html.match(
-    /ytInitialPlayerResponse\s*=\s*(\{.+?\})\s*;/s
-  );
-  if (!playerRespMatch) {
-    throw new Error("ytInitialPlayerResponse not found in page HTML");
-  }
-
-  let playerResp: any;
-  try {
-    playerResp = JSON.parse(playerRespMatch[1]);
-  } catch {
-    throw new Error("Failed to parse ytInitialPlayerResponse JSON");
-  }
-
-  // Navigate to captionTracks
-  const captionTracks: Array<{ baseUrl: string; languageCode: string; kind?: string }> =
-    playerResp?.captions?.playerCaptionsTracklistRenderer?.captionTracks ?? [];
-
-  if (!captionTracks.length) {
-    throw new Error("No caption tracks found in player response");
-  }
-
-  console.log(
-    `Found ${captionTracks.length} caption track(s):`,
-    captionTracks.map((t) => `${t.languageCode}${t.kind ? `(${t.kind})` : ""}`)
-  );
-
-  // Priority order: manual en → manual en-* → asr en → any track
-  const track =
-    captionTracks.find((t) => t.languageCode === "en" && !t.kind) ??
-    captionTracks.find((t) => t.languageCode.startsWith("en") && !t.kind) ??
-    captionTracks.find((t) => t.languageCode === "en") ??
-    captionTracks.find((t) => t.languageCode.startsWith("en")) ??
-    captionTracks[0];
-
-  if (!track?.baseUrl) {
-    throw new Error("Selected caption track has no baseUrl");
-  }
-
-  // Fetch the caption XML — append &fmt=json3 to get JSON instead of XML
-  const captionUrl = `${track.baseUrl}&fmt=json3`;
-  const captionResp = await fetch(captionUrl, {
-    headers: { "User-Agent": randomUA() },
-  });
-
   if (!captionResp.ok) {
-    throw new Error(`Caption URL responded with HTTP ${captionResp.status}`);
+    throw new Error(`timedtext fetch failed: HTTP ${captionResp.status}`);
   }
 
-  const captionData = await captionResp.json() as any;
+  const rawText = await captionResp.text();
 
-  // json3 format: { events: [{ segs: [{ utf8: "text" }] }] }
-  const text = (captionData.events ?? [])
-    .flatMap((e: any) => (e.segs ?? []).map((s: any) => s.utf8 ?? ""))
-    .join(" ")
-    .replace(/\s+/g, " ")
-    .trim();
-
-  if (!text || text.length < 50) {
-    throw new Error("Caption track produced empty or very short text");
+  if (!rawText || rawText.trim().length === 0) {
+    throw new Error("timedtext returned empty body");
   }
 
-  return text;
+  // Parse JSON3 format: { events: [{ segs: [{ utf8: "text" }] }] }
+  if (rawText.trim().startsWith("{")) {
+    const data = JSON.parse(rawText) as any;
+    const text = (data.events ?? [])
+      .flatMap((e: any) => (e.segs ?? []).map((s: any) => s.utf8 ?? ""))
+      .join(" ")
+      .replace(/\n/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+
+    if (text && text.length > 50) return text;
+  }
+
+  // Fallback: parse as XML (srv3 format)
+  if (rawText.includes("<text")) {
+    const text = parseTimedTextXml(rawText);
+    if (text && text.length > 50) return text;
+  }
+
+  throw new Error("Caption content empty after parsing");
 }
 
-// ─── Strategy 2: Direct timedtext API ────────────────────────────────────────
+// ─── Strategy 2: Supadata API ─────────────────────────────────────────────────
 
 /**
- * Calls the public /api/timedtext endpoint directly with several language
- * variants.  Falls back to XML parsing when JSON is unavailable.
+ * Supadata is a free third-party service that fetches YouTube transcripts.
+ * Their servers are NOT on AWS IP ranges so YouTube doesn't block them.
  *
- * This sometimes works even when the watch-page approach fails because it
- * hits a different YouTube endpoint.
+ * Free tier: 200 requests/day, no credit card required.
+ * Sign up: https://supadata.ai → get API key → add as SUPADATA_API_KEY in Lambda
  */
-async function fetchTranscriptViaTimedTextApi(
-  videoId: string
-): Promise<string> {
-  console.log("🔍 Strategy 2: Fetching via timedtext API...");
+async function fetchTranscriptViaSupadata(videoId: string): Promise<string> {
+  const apiKey = process.env.SUPADATA_API_KEY;
+  if (!apiKey) {
+    throw new Error("SUPADATA_API_KEY not set — skipping Supadata");
+  }
 
-  const langVariants = ["en", "en-US", "en-GB", "a.en"];
+  const url =
+    `https://api.supadata.ai/v1/youtube/transcript` +
+    `?videoId=${videoId}&lang=en&text=true`;
 
-  for (const lang of langVariants) {
+  const resp = await fetch(url, {
+    headers: {
+      "x-api-key": apiKey,
+      Accept: "application/json",
+    },
+  });
+
+  if (!resp.ok) {
+    const body = await resp.text();
+    throw new Error(`Supadata API ${resp.status}: ${body}`);
+  }
+
+  const data = await resp.json() as any;
+
+  // Supadata returns { content: "full transcript" } when text=true
+  const text: string = data?.content ?? data?.transcript ?? "";
+
+  if (!text || text.length < 50) {
+    throw new Error("Supadata returned empty transcript");
+  }
+
+  return text.replace(/\s+/g, " ").trim();
+}
+
+// ─── Strategy 3: youtube-transcript package ───────────────────────────────────
+
+/**
+ * Last resort. Unlikely to work from Lambda IPs but included as final fallback.
+ */
+async function fetchTranscriptViaPackage(videoId: string): Promise<string> {
+  const langOptions = [{ lang: "en" }, { lang: "en-US" }, { lang: "en-GB" }, {}];
+
+  for (const opts of langOptions) {
     try {
-      // Try JSON format first (fmt=json3)
-      const jsonUrl =
-        `https://www.youtube.com/api/timedtext` +
-        `?v=${videoId}&lang=${lang}&fmt=json3`;
-
-      const resp = await fetch(jsonUrl, {
-        headers: {
-          "User-Agent": randomUA(),
-          "Accept-Language": "en-US,en;q=0.9",
-          Cookie: "CONSENT=YES+;",
-        },
-      });
-
-      if (resp.ok) {
-        const data = await resp.json() as any;
-        const text = (data.events ?? [])
-          .flatMap((e: any) => (e.segs ?? []).map((s: any) => s.utf8 ?? ""))
+      const segments = await YoutubeTranscript.fetchTranscript(videoId, opts);
+      if (segments?.length) {
+        return segments
+          .map((s) => s.text)
           .join(" ")
           .replace(/\s+/g, " ")
           .trim();
-
-        if (text && text.length > 50) {
-          console.log(`✅ timedtext JSON worked for lang=${lang}`);
-          return text;
-        }
       }
-
-      // Fallback: XML format (srv3)
-      const xmlUrl =
-        `https://www.youtube.com/api/timedtext` +
-        `?v=${videoId}&lang=${lang}&fmt=srv3`;
-
-      const xmlResp = await fetch(xmlUrl, {
-        headers: { "User-Agent": randomUA(), Cookie: "CONSENT=YES+;" },
-      });
-
-      if (xmlResp.ok) {
-        const xml = await xmlResp.text();
-        if (xml && xml.includes("<text")) {
-          const text = parseTimedTextXml(xml);
-          if (text && text.length > 50) {
-            console.log(`✅ timedtext XML worked for lang=${lang}`);
-            return text;
-          }
-        }
-      }
-    } catch (err) {
-      console.warn(`timedtext attempt for lang=${lang} failed:`, err);
+    } catch {
+      // try next lang
     }
   }
 
-  throw new Error("All timedtext language variants failed");
+  throw new Error("youtube-transcript package returned no segments");
 }
 
-/**
- * Parse the legacy srv3 XML format:
- * <transcript><text start="0.5" dur="1.0">Hello world</text></transcript>
- */
+// ─── Shared XML parser ────────────────────────────────────────────────────────
+
 function parseTimedTextXml(xml: string): string {
   try {
     const parser = new XMLParser({ ignoreAttributes: false });
@@ -282,7 +268,6 @@ function parseTimedTextXml(xml: string): string {
       .replace(/\s+/g, " ")
       .trim();
   } catch {
-    // Last-ditch regex approach
     return (xml.match(/<text[^>]*>([^<]*)<\/text>/g) ?? [])
       .map((t) => t.replace(/<[^>]+>/g, ""))
       .join(" ")
@@ -290,49 +275,33 @@ function parseTimedTextXml(xml: string): string {
   }
 }
 
-// ─── Strategy 3: youtube-transcript package ───────────────────────────────────
-
-/**
- * Last resort — uses the npm package which does its own watch-page parsing.
- * Sometimes works if YT hasn't blocked the Lambda IP yet, but is not reliable
- * for AWS IPs in the long run.
- */
-async function fetchTranscriptViaPackage(videoId: string): Promise<string> {
-  console.log("🔍 Strategy 3: Fetching via youtube-transcript package...");
-
-  // Try multiple languages including auto-generated captions
-  const langOptions = [
-    { lang: "en" },
-    { lang: "en-US" },
-    { lang: "en-GB" },
-    {}, // no lang specified — package picks the default
-  ];
-
-  for (const opts of langOptions) {
-    try {
-      const segments = await YoutubeTranscript.fetchTranscript(videoId, opts);
-      if (segments?.length) {
-        return segments
-          .map((s) => s.text)
-          .join(" ")
-          .replace(/\s+/g, " ")
-          .trim();
-      }
-    } catch {
-      // try next
-    }
-  }
-
-  throw new Error("youtube-transcript package returned no segments");
-}
-
 // ─── Video title ──────────────────────────────────────────────────────────────
 
 export async function fetchVideoTitle(videoId: string): Promise<string> {
+  // Try YouTube Data API first (reliable, not IP-blocked)
+  const apiKey = process.env.YOUTUBE_API_KEY;
+  if (apiKey) {
+    try {
+      const url =
+        `https://www.googleapis.com/youtube/v3/videos` +
+        `?part=snippet&id=${videoId}&key=${apiKey}`;
+      const resp = await fetch(url);
+      if (resp.ok) {
+        const data = await resp.json() as any;
+        const title: string = data?.items?.[0]?.snippet?.title ?? "";
+        if (title) return title;
+      }
+    } catch {
+      // fall through to scrape
+    }
+  }
+
+  // Fallback: scrape watch page
   try {
     const resp = await fetch(`https://www.youtube.com/watch?v=${videoId}`, {
       headers: {
-        "User-Agent": randomUA(),
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
         "Accept-Language": "en-US,en;q=0.9",
         Cookie: "CONSENT=YES+;",
       },
@@ -340,12 +309,11 @@ export async function fetchVideoTitle(videoId: string): Promise<string> {
     if (resp.ok) {
       const html = await resp.text();
       const match = html.match(/<title>(.+?)<\/title>/);
-      if (match) {
-        return match[1].replace(" - YouTube", "").trim();
-      }
+      if (match) return match[1].replace(" - YouTube", "").trim();
     }
   } catch {
     // fall through
   }
+
   return `YouTube Video ${videoId}`;
 }
