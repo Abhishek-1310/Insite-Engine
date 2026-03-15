@@ -177,7 +177,7 @@ async function fetchTranscriptViaWatchPage(videoId: string): Promise<string> {
     throw new Error(`Caption URL responded with HTTP ${captionResp.status}`);
   }
 
-  const captionData = await captionResp.json();
+  const captionData = await captionResp.json() as any;
 
   // json3 format: { events: [{ segs: [{ utf8: "text" }] }] }
   const text = (captionData.events ?? [])
@@ -225,7 +225,7 @@ async function fetchTranscriptViaTimedTextApi(
       });
 
       if (resp.ok) {
-        const data = await resp.json();
+        const data = await resp.json() as any;
         const text = (data.events ?? [])
           .flatMap((e: any) => (e.segs ?? []).map((s: any) => s.utf8 ?? ""))
           .join(" ")
