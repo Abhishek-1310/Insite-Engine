@@ -30,7 +30,7 @@ export default function App() {
               </div>
               <div>
                 <h1 className="text-xl font-bold text-white tracking-tight">
-                  Insight Engine
+                  Abhishek '-' Insight Engine
                 </h1>
                 <p className="text-xs text-dark-400">
                   AI-Powered Second Brain
@@ -90,7 +90,7 @@ export default function App() {
         <div className="max-w-7xl mx-auto px-6 py-6">
           <div className="flex flex-col sm:flex-row items-center justify-between gap-4">
             <p className="text-xs text-dark-500">
-              Built with React, Gemini AI, Pinecone & AWS Lambda
+              Built with React, Gemini AI, Pinecone & AWS Lambda ( Abhishek powered engine 07-09-2026)
             </p>
             <div className="flex items-center gap-4 text-xs text-dark-600">
               <span>RAG Architecture</span>
