@@ -6,10 +6,13 @@ import ChatInterface from "./components/ChatInterface";
 
 export default function App() {
   const [refreshTrigger, setRefreshTrigger] = useState(0);
+  const [activeDocumentId, setActiveDocumentId] = useState<string | undefined>(undefined);
 
-  const handleUploadComplete = () => {
+  const handleUploadComplete = (documentId?: string) => {
     // Trigger document list refresh
     setRefreshTrigger((prev) => prev + 1);
+    // Switch chat context to the newly ingested document
+    if (documentId) setActiveDocumentId(documentId);
   };
 
   return (
@@ -77,7 +80,7 @@ export default function App() {
             <h2 className="text-sm font-semibold text-dark-300 uppercase tracking-wider mb-3">
               Chat with Your Documents
             </h2>
-            <ChatInterface />
+            <ChatInterface documentId={activeDocumentId} />
           </div>
         </div>
       </main>

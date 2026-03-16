@@ -14,7 +14,7 @@ import {
 import { getUploadUrl, uploadFileToS3, ingestYouTubeUrl } from "../lib/api";
 
 interface FileUploaderProps {
-  onUploadComplete: () => void;
+  onUploadComplete: (documentId?: string) => void;
 }
 
 type UploadStatus =
@@ -49,7 +49,7 @@ export default function FileUploader({ onUploadComplete }: FileUploaderProps) {
       try {
         // Step 1: Get pre-signed URL
         setStatus("getting-url");
-        const { uploadUrl } = await getUploadUrl(file.name, file.type);
+        const { uploadUrl, documentId } = await getUploadUrl(file.name, file.type);
 
         // Step 2: Upload to S3
         setStatus("uploading");
@@ -61,7 +61,7 @@ export default function FileUploader({ onUploadComplete }: FileUploaderProps) {
 
         setStatus("success");
         setResultMessage(`${file.name} uploaded & queued for processing!`);
-        onUploadComplete();
+        onUploadComplete(documentId);
 
         // Reset after success
         setTimeout(() => {
@@ -129,7 +129,7 @@ export default function FileUploader({ onUploadComplete }: FileUploaderProps) {
         setResultMessage(
           `"${result.documentName}" processed — ${result.chunksCreated} chunks indexed!`
         );
-        onUploadComplete();
+        onUploadComplete(result.documentId);
 
         setTimeout(() => {
           setStatus("idle");

@@ -19,7 +19,11 @@ interface Message {
   timestamp: Date;
 }
 
-export default function ChatInterface() {
+interface ChatInterfaceProps {
+  documentId?: string;
+}
+
+export default function ChatInterface({ documentId }: ChatInterfaceProps) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
@@ -33,6 +37,12 @@ export default function ChatInterface() {
   useEffect(() => {
     scrollToBottom();
   }, [messages]);
+
+  // Clear chat history whenever the active document changes
+  useEffect(() => {
+    setMessages([]);
+    setInput("");
+  }, [documentId]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -52,7 +62,7 @@ export default function ChatInterface() {
     setIsLoading(true);
 
     try {
-      const response = await askQuestion(question);
+      const response = await askQuestion(question, documentId);
 
       const assistantMessage: Message = {
         id: (Date.now() + 1).toString(),
@@ -136,9 +146,8 @@ export default function ChatInterface() {
           messages.map((message) => (
             <div
               key={message.id}
-              className={`flex gap-3 animate-slide-up ${
-                message.role === "user" ? "justify-end" : ""
-              }`}
+              className={`flex gap-3 animate-slide-up ${message.role === "user" ? "justify-end" : ""
+                }`}
             >
               {message.role === "assistant" && (
                 <div className="shrink-0 mt-1">
@@ -149,11 +158,10 @@ export default function ChatInterface() {
               )}
 
               <div
-                className={`max-w-[80%] ${
-                  message.role === "user"
+                className={`max-w-[80%] ${message.role === "user"
                     ? "bg-primary-600 rounded-2xl rounded-tr-md px-4 py-3"
                     : "bg-dark-800/50 rounded-2xl rounded-tl-md px-4 py-3"
-                }`}
+                  }`}
               >
                 {message.role === "assistant" ? (
                   <div className="prose-chat text-sm text-dark-200">
