@@ -47,7 +47,7 @@ This is the **real deployment**. It creates real AWS resources.
 cd backend
 
 # Create a .env file from the example
-cp .env.example .env
+touch .env
 
 # Edit the .env file with YOUR real keys
 nano .env   # or open in VS Code
@@ -86,6 +86,7 @@ aws configure
 # Option B: Environment variables
 export AWS_ACCESS_KEY_ID=AKIA...
 export AWS_SECRET_ACCESS_KEY=wJalr...
+region
 ```
 
 #### Step 4: Deploy Backend
@@ -215,10 +216,7 @@ Before running anything, make sure you have:
 ```
 
 **Why Serverless Framework?**
-- You DON'T need to click around the AWS Console
-- Everything is version-controlled (git tracks your infrastructure)
-- One command deploys everything: `serverless deploy`
-- One command destroys everything: `serverless remove` (no leftover costs)
+- it help you to deploy and destroy infrastructure with one command
 
 ---
 
@@ -306,14 +304,6 @@ User asks: "What programming languages does this person know?"
 - `src/components/DocumentList.tsx` — Shows processed PDFs
 - `src/components/ChatInterface.tsx` — ChatGPT-style chat
 - `src/lib/api.ts` — API client (all HTTP calls)
-
-**Design Decisions:**
-- **Glassmorphism UI** — `bg-white/5 backdrop-blur-xl` for the premium look
-- **Dark theme** — Professional, easy on the eyes
-- **XHR for uploads** (not fetch) — Because `XMLHttpRequest` gives you upload progress events. `fetch()` does NOT support upload progress.
-- **react-dropzone** — Industry-standard drag-and-drop library
-- **react-markdown** — Renders AI responses with proper formatting (bold, lists, code blocks)
-- **lucide-react** — Beautiful, consistent icons
 
 ---
 
@@ -570,9 +560,9 @@ your temporary credentials.
 
 ---
 
-## 🎯 INTERVIEW TALKING POINTS
+## 🎯 important POINTS
 
-When presenting this project, highlight:
+project, highlight:
 
 1. **"I built a full-stack RAG application from scratch"**
    — RAG is the hottest AI pattern in production right now.
